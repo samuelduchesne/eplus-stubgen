@@ -19,7 +19,8 @@ jobs:
   check-new-eplus:
     if: ${{ github.event_name == 'schedule' && vars.ENABLE_AUTO_TAG == 'true' }}
     runs-on: ubuntu-latest
-    permissions: { contents: write }
+    permissions: 
+      contents: write
     env: { GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
     steps:
       - uses: actions/checkout@v4
