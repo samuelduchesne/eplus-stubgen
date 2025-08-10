@@ -1,0 +1,279 @@
+name: stubs
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']          # e.g., v23.1.0
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      eplus_matrix:
+        description: 'JSON list of EnergyPlus minor versions'
+        required: false
+        default: '["23.1","24.1"]'
+  schedule:
+    - cron: '0 9 * * 1'       # weekly check for new E+ release (optional; see check-new-eplus job)
+
+jobs:
+  # Optional job: auto-tag this repo when NREL/EnergyPlus publishes a new release.
+  # Enable by setting repo variable ENABLE_AUTO_TAG=true
+  check-new-eplus:
+    if: ${{ github.event_name == 'schedule' && vars.ENABLE_AUTO_TAG == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover latest EnergyPlus release tag
+        id: ep
+        run: |
+          set -euo pipefail
+          latest=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/NREL/EnergyPlus/releases/latest | jq -r .tag_name)
+          case "$latest" in v*) ;; *) latest="v${latest}";; esac
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+      - name: Create tag here if missing
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.ep.outputs.tag }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${tag}$"; then
+            echo "Tag ${tag} already exists."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "Auto-tag for EnergyPlus ${tag}"
+          git push origin "${tag}"
+
+  build-validate:
+    name: Build & validate (${{ matrix.target }} / E+ ${{ matrix.eplus }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        eplus: ${{ fromJson(github.event.inputs.eplus_matrix || '["23.1","24.1"]') }}
+        target: ["eppy-stubs", "archetypal-stubs"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" mypy build jq
+
+      - name: Discover latest patch + commit SHA for minor ${{ matrix.eplus }}
+        id: discover
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          minor="${{ matrix.eplus }}."
+          # Get the latest release whose tag starts with "<minor>."
+          rel=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/NREL/EnergyPlus/releases \
+            | jq -cr --arg m "$minor" \
+              '[ .[] | select(.tag_name|startswith($m)) ]
+               | sort_by(.tag_name | capture("(?<a>\\d+)\\.(?<b>\\d+)\\.(?<c>\\d+)").c|tonumber)
+               | last')
+          tag=$(jq -r '.tag_name' <<<"$rel")
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "No release found for minor ${{ matrix.eplus }}; defaulting to .0"
+            tag="v${{ matrix.eplus }}.0"
+          fi
+          ver="${tag#v}"                 # 24.1.0
+          install="${ver//./-}"         # 24-1-0
+
+          # Resolve commit SHA for the tag (follow annotated tag if needed)
+          ref_json=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/NREL/EnergyPlus/git/refs/tags/${tag}")
+          type=$(jq -r '.object.type' <<<"$ref_json")
+          sha=$(jq -r '.object.sha' <<<"$ref_json")
+          if [ "$type" = "tag" ]; then
+            tag_obj=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/NREL/EnergyPlus/git/tags/${sha}")
+            sha=$(jq -r '.object.sha' <<<"$tag_obj")
+          fi
+
+          echo "version=$ver"   >> "$GITHUB_OUTPUT"
+          echo "install=$install" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha"       >> "$GITHUB_OUTPUT"
+
+      - name: Install EnergyPlus ${{ steps.discover.outputs.version }}
+        uses: Elementa-Engineering/install-energyplus@main
+        with:
+          energyplus-version: ${{ steps.discover.outputs.version }}
+          energyplus-sha: ${{ steps.discover.outputs.sha }}
+          energyplus-install: ${{ steps.discover.outputs.install }}
+
+      - name: Locate Energy+.idd
+        id: idd
+        run: |
+          set -euo pipefail
+          # Default install location used by the action
+          IDD="/usr/local/EnergyPlus-${{ steps.discover.outputs.install }}/Energy+.idd"
+          if [ ! -s "$IDD" ]; then
+            echo "Primary path not found, scanning /usr/local for Energy+.idd..."
+            IDD=$(find /usr/local -maxdepth 3 -type f -name 'Energy+.idd' | head -n1 || true)
+          fi
+          if [ -z "$IDD" ] || [ ! -s "$IDD" ]; then
+            echo "::error::Energy+.idd not found after installation."
+            exit 1
+          fi
+          echo "path=$IDD" >> "$GITHUB_OUTPUT"
+          ls -l "$IDD"
+
+      - name: Generate stubs
+        run: |
+          python -m mypy_eppy_builder.build_cli \
+            --idd "${{ steps.idd.outputs.path }}" \
+            --eplus "${{ matrix.eplus }}" \
+            --patch 0 \
+            --out generated_package
+
+      - name: Enforce stub-only hygiene
+        run: |
+          root="generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0/src"
+          if [[ "${{ matrix.target }}" == "eppy-stubs" ]]; then pkg_dir="$root/eppy"; else pkg_dir="$root/archetypal"; fi
+          test -d "$pkg_dir" || (echo "::error::Package dir not found: $pkg_dir" && exit 1)
+          if find "$pkg_dir" -type f -name "*.py" | grep -q .; then
+            echo "::error::Found .py files under stubs (must be .pyi only)"; exit 1; fi
+          if find "$pkg_dir" -type f -name "py.typed" | grep -q .; then
+            echo "::error::Found py.typed (stub-only wheels must not include it)"; exit 1; fi
+          test -f "$pkg_dir/__init__.pyi" || (echo "::error::__init__.pyi missing" && exit 1)
+          if [[ "${{ matrix.target }}" == "eppy-stubs" ]]; then
+            test -f "$pkg_dir/_kwargs.pyi" || (echo "::error::_kwargs.pyi missing" && exit 1)
+            test -f "$pkg_dir/idf_overloads.pyi" || (echo "::error::idf_overloads.pyi missing" && exit 1)
+          else
+            test -f "generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0/src/geomeppy/__init__.pyi" \
+              || (echo "::error::geomeppy shim missing" && exit 1)
+            grep -q "_IDFOverloads" "generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0/src/archetypal/idf.pyi" \
+              || (echo "::error::archetypal IDF must mix in _IDFOverloads" && exit 1)
+          fi
+
+      - name: Build wheel
+        working-directory: generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0
+        run: python -m build --wheel
+
+      - name: Mypy smoke tests
+        run: |
+          EPPY_WHL=$(ls generated_package/eppy-stubs-${{ matrix.eplus }}.0/dist/*.whl | head -n1)
+          pip install "$EPPY_WHL"
+          if [[ "${{ matrix.target }}" == "eppy-stubs" ]]; then
+            cat > ok.py <<'PY'
+            from eppy.idf import IDF
+            def ok(i: IDF) -> None:
+                i.newidfobject("ZONE", name="Z1", direction_of_relative_north=0.0, part_of_total_floor_area="Yes")
+            PY
+            cat > bad.py <<'PY'
+            from eppy.idf import IDF
+            def bad(i: IDF) -> None:
+                i.newidfobject("ZONE", namez="Z1")
+            PY
+            python -m mypy --strict ok.py
+            set +e
+            python -m mypy --strict bad.py > out.txt 2>&1
+            set -e
+            grep -q "Unexpected keyword argument" out.txt || (echo "::error::Expected mypy to flag bad kwargs" && cat out.txt && exit 1)
+          else
+            ARCH_WHL=$(ls generated_package/archetypal-stubs-${{ matrix.eplus }}.0/dist/*.whl | head -n1)
+            pip install "$ARCH_WHL"
+            cat > ok_arch.py <<'PY'
+            from archetypal.idf import IDF
+            def ok(i: IDF) -> None:
+                i.newidfobject("ZONE", name="Z2")
+            PY
+            python -m mypy --strict ok_arch.py
+          fi
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-${{ matrix.eplus }}.0
+          path: generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0/dist/*.whl
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" build jq
+      - name: Derive versions from tag
+        id: ver
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF##*/}"        # v23.1.0
+          VER="${TAG#v}"                 # 23.1.0
+          MINOR="$(echo "$VER" | cut -d. -f1-2)"  # 23.1
+          echo "ver=$VER"    >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+      - name: Resolve EnergyPlus commit SHA for tag
+        id: tsha
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.ver.outputs.ver }}"
+          ref_json=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/NREL/EnergyPlus/git/refs/tags/${tag}")
+          type=$(jq -r '.object.type' <<<"$ref_json")
+          sha=$(jq -r '.object.sha' <<<"$ref_json")
+          if [ "$type" = "tag" ]; then
+            tag_obj=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/NREL/EnergyPlus/git/tags/${sha}")
+            sha=$(jq -r '.object.sha' <<<"$tag_obj")
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Install EnergyPlus ${{ steps.ver.outputs.ver }}
+        uses: Elementa-Engineering/install-energyplus@main
+        with:
+          energyplus-version: ${{ steps.ver.outputs.ver }}
+          energyplus-sha: ${{ steps.tsha.outputs.sha }}
+          energyplus-install: ${{ steps.ver.outputs.ver && steps.ver.outputs.ver != '' && steps.ver.outputs.ver || '0.0.0' }}
+      - name: Locate Energy+.idd
+        id: idd
+        run: |
+          set -euo pipefail
+          install="${{ steps.ver.outputs.ver }}"
+          install="${install//./-}"
+          IDD="/usr/local/EnergyPlus-${install}/Energy+.idd"
+          if [ ! -s "$IDD" ]; then
+            IDD=$(find /usr/local -maxdepth 3 -type f -name 'Energy+.idd' | head -n1 || true)
+          fi
+          if [ -z "$IDD" ] || [ ! -s "$IDD" ]; then
+            echo "::error::Energy+.idd not found after installation."
+            exit 1
+          fi
+          echo "path=$IDD" >> "$GITHUB_OUTPUT"
+      - name: Generate stubs (release)
+        run: |
+          python -m mypy_eppy_builder.build_cli \
+            --idd "${{ steps.idd.outputs.path }}" \
+            --eplus "${{ steps.ver.outputs.minor }}" \
+            --patch "$(echo "${{ steps.ver.outputs.ver }}" | cut -d. -f3)" \
+            --out generated_package
+      - name: Build wheels
+        run: |
+          python -m build --wheel --outdir dist generated_package/eppy-stubs-${{ steps.ver.outputs.ver }}
+          python -m build --wheel --outdir dist generated_package/archetypal-stubs-${{ steps.ver.outputs.ver }}
+      - name: Publish to PyPI
+        run: |
+          pip install twine
+          python -m twine upload --non-interactive -u __token__ -p "$PYPI_TOKEN" dist/*.whl
