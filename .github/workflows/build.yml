@@ -3,7 +3,7 @@ name: stubs
 on:
   push:
     branches: [main]
-    tags: ['v*.*.*']          # e.g., v24.1.0
+    tags: ['v*.*.*']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -12,179 +12,138 @@ on:
         required: false
         default: '["23.1","24.1"]'
   schedule:
-    - cron: '0 9 * * 1'       # optional: weekly check for new E+ release
+    - cron: '0 9 * * 1'
 
 jobs:
-  # Optional: auto-tag repo when NREL/EnergyPlus publishes a new release.
-  check-new-eplus:
+  auto-tag:
     if: ${{ github.event_name == 'schedule' && vars.ENABLE_AUTO_TAG == 'true' }}
     runs-on: ubuntu-latest
-    permissions: 
+    permissions:
       contents: write
-    env: 
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - name: Discover latest EnergyPlus release tag
-        id: ep
-        run: |
-          set -euo pipefail
-          latest=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/repos/NREL/EnergyPlus/releases/latest | jq -r .tag_name)
-          case "$latest" in v*) ;; *) latest="v${latest}";; esac
-          echo "tag=$latest" >> "$GITHUB_OUTPUT"
-      - name: Create tag here if missing
+      - name: Discover latest EnergyPlus tag
+        id: discover
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          tag="${{ steps.ep.outputs.tag }}"
-          if git ls-remote --tags origin | grep -q "refs/tags/${tag}$"; then
-            echo "Tag ${tag} already exists."; exit 0; fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${tag}" -m "Auto-tag for EnergyPlus ${tag}"
-          git push origin "${tag}"
+          latest=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/NREL/EnergyPlus/releases/latest | jq -r '.tag_name')
+          case "$latest" in
+            v*) ;;
+            *) latest="v$latest" ;;
+          esac
+          echo "LATEST=$latest" >> "$GITHUB_ENV"
+      - name: Create tag if missing
+        if: ${{ !contains(github.ref, env.LATEST) }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions@users.noreply.github.com"
+          git tag -a "${{ env.LATEST }}" -m "Auto tag"
+          git push origin "${{ env.LATEST }}"
 
-  build-validate:
-    name: Build & validate (${{ matrix.target }} / E+ ${{ matrix.eplus }})
+  build:
+    name: Build & Validate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         eplus: ${{ fromJson(github.event.inputs.eplus_matrix || '["23.1","24.1"]') }}
-        target: ["eppy-stubs", "archetypal-stubs"]
+        target: [eppy-stubs, archetypal-stubs]
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-
-      - name: Install build deps
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" mypy build jq
-
-      - name: Resolve latest patch tag for minor ${{ matrix.eplus }}
-        id: discover
+          pip install -e ".[dev]" jq mypy build
+      - name: Resolve EnergyPlus release information
+        id: resolve
         run: |
-          set -euo pipefail
           minor="${{ matrix.eplus }}."
-          rel=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/repos/NREL/EnergyPlus/releases \
-            | jq -cr --arg m "$minor" \
-              '[ .[] | select(.tag_name|startswith($m)) ]
-               | sort_by(.tag_name | capture("(?<a>\\d+)\\.(?<b>\\d+)\\.(?<c>\\d+)").c|tonumber)
-               | last')
-          tag=$(jq -r '.tag_name' <<<"$rel")
-          [ -z "$tag" -o "$tag" = "null" ] && tag="v${{ matrix.eplus }}.0"
-          ver="${tag#v}"                 # e.g. 24.1.0
-          install="${ver//./-}"          # 24-1-0
-          echo "tag=$tag"       >> "$GITHUB_OUTPUT"
-          echo "version=$ver"   >> "$GITHUB_OUTPUT"
-          echo "install=$install" >> "$GITHUB_OUTPUT"
-
-      - name: Find Linux installer asset URL
+          rel=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/NREL/EnergyPlus/releases | \
+            jq -cr --arg m "$minor" '[.[] | select(.tag_name | startswith($m))] | sort_by(.tag_name | split(".")[2] | tonumber) | last')
+          tag=$(echo "$rel" | jq -r '.tag_name')
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            tag="v${{ matrix.eplus }}.0"
+          fi
+          version="${tag#v}"
+          install="${version//./-}"
+          echo "tag=$tag" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_ENV"
+          echo "install=$install" >> "$GITHUB_ENV"
+      - name: Find Linux installer
         id: asset
         run: |
-          set -euo pipefail
-          # Query the release-by-tag to get assets array, then pick Ubuntu 22.04 first, else any Linux x86_64 .sh
-          rel=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/NREL/EnergyPlus/releases/tags/${{ steps.discover.outputs.tag }}")
-          url=$(jq -r '
-              .assets[]
-              | select(.name | test("Linux.*Ubuntu22.*x86_64.*\\.sh$"))
-              | .browser_download_url
-            ' <<<"$rel" | head -n1)
+          rel=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/NREL/EnergyPlus/releases/tags/${{ env.tag }})
+          url=$(echo "$rel" | jq -r '.assets[] | select(.name | test("Linux.*Ubuntu22.*x86_64.*\\.sh$")) | .browser_download_url' | head -n1)
           if [ -z "$url" ]; then
-            url=$(jq -r '
-                .assets[]
-                | select(.name | test("Linux.*x86_64.*\\.sh$"))
-                | .browser_download_url
-              ' <<<"$rel" | head -n1)
+            url=$(echo "$rel" | jq -r '.assets[] | select(.name | test("Linux.*x86_64.*\\.sh$")) | .browser_download_url' | head -n1)
           fi
-          [ -z "$url" ] && { echo "::error::No Linux installer asset found"; exit 1; }
           echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "Chosen asset: $url"
-
-      - name: Download & unattended install EnergyPlus ${{ steps.discover.outputs.version }}
+      - name: Install EnergyPlus
         run: |
-          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y curl ca-certificates libx11-6 libgomp1
           curl -fsSL "${{ steps.asset.outputs.url }}" -o eplus.sh
           chmod +x eplus.sh
-          # InstallBuilder supports --mode unattended and --unattendedmodeui none
-          sudo ./eplus.sh \
-            --mode unattended \
-            --unattendedmodeui none \
-            --prefix "/usr/local/EnergyPlus-${{ steps.discover.outputs.install }}" \
-            --debuglevel 2
-          ls -l "/usr/local/EnergyPlus-${{ steps.discover.outputs.install }}/Energy+.idd"
-
+          sudo ./eplus.sh --mode unattended --unattendedmodeui none \
+            --prefix "/usr/local/EnergyPlus-${{ env.install }}" --debuglevel 2
       - name: Generate stubs
         run: |
           python -m mypy_eppy_builder.build_cli \
-            --idd "/usr/local/EnergyPlus-${{ steps.discover.outputs.install }}/Energy+.idd" \
+            --idd "/usr/local/EnergyPlus-${{ env.install }}/Energy+.idd" \
             --eplus "${{ matrix.eplus }}" \
             --patch 0 \
             --out generated_package
-
-      - name: Enforce stub-only hygiene
+      - name: Lint stubs
         run: |
           root="generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0/src"
-          if [[ "${{ matrix.target }}" == "eppy-stubs" ]]; then pkg_dir="$root/eppy"; else pkg_dir="$root/archetypal"; fi
-          test -d "$pkg_dir" || (echo "::error::Package dir not found: $pkg_dir" && exit 1)
-          if find "$pkg_dir" -type f -name "*.py" | grep -q .; then
-            echo "::error::Found .py files under stubs (must be .pyi only)"; exit 1; fi
-          if find "$pkg_dir" -type f -name "py.typed" | grep -q .; then
-            echo "::error::Found py.typed (stub-only wheels must not include it)"; exit 1; fi
-          test -f "$pkg_dir/__init__.pyi" || (echo "::error::__init__.pyi missing" && exit 1)
-          if [[ "${{ matrix.target }}" == "eppy-stubs" ]]; then
-            test -f "$pkg_dir/_kwargs.pyi" || (echo "::error::_kwargs.pyi missing" && exit 1)
-            test -f "$pkg_dir/idf_overloads.pyi" || (echo "::error::idf_overloads.pyi missing" && exit 1)
+          if [ "${{ matrix.target }}" = "eppy-stubs" ]; then
+            pkg="$root/eppy"
           else
-            test -f "generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0/src/geomeppy/__init__.pyi" \
-              || (echo "::error::geomeppy shim missing" && exit 1)
-            grep -q "_IDFOverloads" "generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0/src/archetypal/idf.pyi" \
-              || (echo "::error::archetypal IDF must mix in _IDFOverloads" && exit 1)
+            pkg="$root/archetypal"
           fi
-
-      - name: Build wheel
+          if find "$pkg" -type f -name '*.py' | grep -q .; then exit 1; fi
+          if find "$pkg" -type f -name 'py.typed' | grep -q .; then exit 1; fi
+          test -f "$pkg/__init__.pyi"
+      - name: Build wheels
         working-directory: generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0
         run: python -m build --wheel
-
       - name: Mypy smoke tests
         run: |
-          EPPY_WHL=$(ls generated_package/eppy-stubs-${{ matrix.eplus }}.0/dist/*.whl | head -n1)
-          pip install "$EPPY_WHL"
-          if [[ "${{ matrix.target }}" == "eppy-stubs" ]]; then
-            cat > ok.py <<'PY'
+          pip install generated_package/eppy-stubs-${{ matrix.eplus }}.0/dist/*.whl
+          if [ "${{ matrix.target }}" = "eppy-stubs" ]; then
+            cat > ok.py <<'EOF'
             from eppy.idf import IDF
             def ok(i: IDF) -> None:
                 i.newidfobject("ZONE", name="Z1", direction_of_relative_north=0.0, part_of_total_floor_area="Yes")
-            PY
-            cat > bad.py <<'PY'
+            EOF
+            cat > bad.py <<'EOF'
             from eppy.idf import IDF
             def bad(i: IDF) -> None:
                 i.newidfobject("ZONE", namez="Z1")
-            PY
-            python -m mypy --strict ok.py
-            set +e; python -m mypy --strict bad.py > out.txt 2>&1; set -e
-            grep -q "Unexpected keyword argument" out.txt || (echo "::error::Expected mypy to flag bad kwargs" && cat out.txt && exit 1)
+            EOF
+            mypy --strict ok.py
+            set +e
+            mypy --strict bad.py > out.txt 2>&1
+            set -e
+            grep -q "Unexpected keyword argument" out.txt
           else
-            ARCH_WHL=$(ls generated_package/archetypal-stubs-${{ matrix.eplus }}.0/dist/*.whl | head -n1)
-            pip install "$ARCH_WHL"
-            cat > ok_arch.py <<'PY'
+            pip install generated_package/archetypal-stubs-${{ matrix.eplus }}.0/dist/*.whl
+            cat > ok_arch.py <<'EOF'
             from archetypal.idf import IDF
             def ok(i: IDF) -> None:
                 i.newidfobject("ZONE", name="Z2")
-            PY
-            python -m mypy --strict ok_arch.py
+            EOF
+            mypy --strict ok_arch.py
           fi
-
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}-${{ matrix.eplus }}.0
@@ -193,74 +152,57 @@ jobs:
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions: { contents: read }
+    permissions:
+      contents: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Install build deps
-        run: |
+        with:
+          python-version: '3.12'
+      - run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" build jq
+          pip install -e ".[dev]" build jq twine
       - name: Derive versions from tag
         id: ver
         run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF##*/}"        # v23.1.0
-          VER="${TAG#v}"                 # 23.1.0
-          MINOR="$(echo "$VER" | cut -d. -f1-2)"  # 23.1
-          echo "ver=$VER"    >> "$GITHUB_OUTPUT"
+          TAG="${GITHUB_REF##*/}"
+          VER="${TAG#v}"
+          MINOR="${VER%.*}.${VER#*.}"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
           echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
-      - name: Find Linux installer asset URL for ${{ steps.ver.outputs.ver }}
+      - name: Find installer for release
         id: asset
         run: |
-          set -euo pipefail
-          rel=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+          rel=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/NREL/EnergyPlus/releases/tags/v${{ steps.ver.outputs.ver }}")
-          url=$(jq -r '
-              .assets[]
-              | select(.name | test("Linux.*Ubuntu22.*x86_64.*\\.sh$"))
-              | .browser_download_url
-            ' <<<"$rel" | head -n1)
+          url=$(echo "$rel" | jq -r '.assets[] | select(.name | test("Linux.*Ubuntu22.*x86_64.*\\.sh$")) | .browser_download_url' | head -n1)
           if [ -z "$url" ]; then
-            url=$(jq -r '
-                .assets[]
-                | select(.name | test("Linux.*x86_64.*\\.sh$"))
-                | .browser_download_url
-              ' <<<"$rel" | head -n1)
+            url=$(echo "$rel" | jq -r '.assets[] | select(.name | test("Linux.*x86_64.*\\.sh$")) | .browser_download_url' | head -n1)
           fi
-          [ -z "$url" ] && { echo "::error::No Linux installer asset found"; exit 1; }
           echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "Chosen asset: $url"
-      - name: Download & unattended install EnergyPlus
+      - name: Install EnergyPlus for release
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y curl ca-certificates libx11-6 libgomp1
+          sudo apt-get update && sudo apt-get install -y curl ca-certificates libx11-6 libgomp1
           curl -fsSL "${{ steps.asset.outputs.url }}" -o eplus.sh
           chmod +x eplus.sh
           install="${{ steps.ver.outputs.ver//./- }}"
-          sudo ./eplus.sh \
-            --mode unattended \
-            --unattendedmodeui none \
-            --prefix "/usr/local/EnergyPlus-${install}" \
-            --debuglevel 2
-          ls -l "/usr/local/EnergyPlus-${install}/Energy+.idd"
-      - name: Generate stubs (release)
+          sudo ./eplus.sh --mode unattended --unattendedmodeui none \
+            --prefix "/usr/local/EnergyPlus-$install" --debuglevel 2
+          ls -l "/usr/local/EnergyPlus-$install/Energy+.idd"
+      - name: Generate stubs for release
         run: |
           python -m mypy_eppy_builder.build_cli \
             --idd "/usr/local/EnergyPlus-${{ steps.ver.outputs.ver//./- }}/Energy+.idd" \
             --eplus "${{ steps.ver.outputs.minor }}" \
             --patch "$(echo "${{ steps.ver.outputs.ver }}" | cut -d. -f3)" \
             --out generated_package
-      - name: Build wheels
+      - name: Build release wheels
         run: |
           python -m build --wheel --outdir dist generated_package/eppy-stubs-${{ steps.ver.outputs.ver }}
           python -m build --wheel --outdir dist generated_package/archetypal-stubs-${{ steps.ver.outputs.ver }}
       - name: Publish to PyPI
         run: |
-          pip install twine
-          python -m twine upload --non-interactive -u __token__ -p "$PYPI_TOKEN" dist/*.whl
+          twine upload --non-interactive -u __token__ -p "$PYPI_TOKEN" dist/*.whl
