@@ -93,8 +93,7 @@ jobs:
           sudo apt-get install -y curl ca-certificates libx11-6 libgomp1
           curl -fsSL "${{ steps.asset.outputs.url }}" -o eplus.sh
           chmod +x eplus.sh
-          sudo ./eplus.sh --mode unattended --unattendedmodeui none \
-            --prefix "/usr/local/EnergyPlus-${{ env.install }}" --debuglevel 2
+          echo -e "y\n\n" | sudo ./eplus.sh
       - name: Generate stubs
         run: |
           python -m mypy_eppy_builder.build_cli \
@@ -194,8 +193,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y curl ca-certificates libx11-6 libgomp1
           curl -fsSL "${{ steps.asset.outputs.url }}" -o eplus.sh
           chmod +x eplus.sh
-          sudo ./eplus.sh --mode unattended --unattendedmodeui none \
-            --prefix "/usr/local/EnergyPlus-${{ steps.dasher.outputs.dashed }}" --debuglevel 2
+          echo -e "y\n\n" | sudo ./eplus.sh
           ls -l "/usr/local/EnergyPlus-${{ steps.dasher.outputs.dashed }}/Energy+.idd"
       - name: Generate stubs for release
         run: |
