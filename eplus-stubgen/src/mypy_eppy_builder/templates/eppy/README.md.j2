@@ -1,0 +1,21 @@
+# eppy-stubs — EnergyPlus {{ eplus_minor }}
+
+Type stubs for [`eppy`](https://github.com/santoshphilip/eppy) generated from
+EnergyPlus {{ eplus_minor }}.  These stubs expose strongly typed overloads for
+`IDF.newidfobject()` so that static type checkers can validate object keys
+and keyword arguments.
+
+## Install
+
+```bash
+pip install "eppy-stubs=={{ eplus_minor }}.*"
+```
+
+Install this package **alongside** `eppy`.  It is a PEP 561 stub-only wheel
+containing `.pyi` files only; there is no runtime code or `py.typed` marker.
+Type checkers will automatically discover the stubs on your `sys.path`.
+
+## Provenance
+
+These stubs were generated from EnergyPlus {{ eplus_minor }}.
+See `generated_by.json` for the IDD hash and generation timestamp.

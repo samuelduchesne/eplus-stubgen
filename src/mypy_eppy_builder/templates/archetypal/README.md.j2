@@ -1,0 +1,22 @@
+# archetypal-stubs — EnergyPlus {{ eplus_minor }}
+
+Type stubs for [`archetypal`](https://github.com/samuelduchesne/archetypal)
+generated from EnergyPlus {{ eplus_minor }}.  These stubs depend on the
+matching `eppy-stubs` release and re-export the typed overloads for
+`IDF.newidfobject()` so that static type checkers can validate your
+EnergyPlus objects.
+
+## Install
+
+```bash
+pip install "archetypal-stubs=={{ eplus_minor }}.*"
+pip install "eppy-stubs=={{ eplus_minor }}.*"  # installed automatically as a dependency
+```
+
+This package is a PEP 561 stub-only wheel.  It includes a minimal
+`geomeppy` shim to satisfy the inheritance chain for `archetypal.IDF`.
+
+## Provenance
+
+These stubs were generated from EnergyPlus {{ eplus_minor }}.
+See `generated_by.json` for the IDD hash and generation timestamp.

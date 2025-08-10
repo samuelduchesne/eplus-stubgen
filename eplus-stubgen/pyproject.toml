@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mypy-eppy-builder"
+version = "0.1.0"
+description = "Generates stub-only wheels for eppy and archetypal from EnergyPlus IDD"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "jinja2>=3.1",  # used for template rendering
+    "typing_extensions>=4.12",  # for Unpack and Literal in older Python
+]
+authors = [
+    { name = "The eplus-stubgen authors" }
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "build",
+    "uv",
+]
+
+[tool.ruff.lint]
+preview = true
+select = [
+    "YTT",
+    "S",
+    "B",
+    "A",
+    "C4",
+    "T10",
+    "SIM",
+    "I",
+    "C90",
+    "E",
+    "W",
+    "F",
+    "PGH",
+    "UP",
+    "RUF",
+    "TRY",
+    "D",
+]
+ignore = [
+    "E501",  # line length handled separately
+    "E731",  # allow assigning lambdas
+    "RUF029",  # unused-async functions not relevant here
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+no_implicit_optional = true
+strict_equality = true
+show_error_codes = true

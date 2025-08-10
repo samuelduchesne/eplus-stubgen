@@ -1,0 +1,25 @@
+! Minimal EnergyPlus IDD for test purposes
+
+\begin-object ZONE
+A1 , \field Name
+\required-field
+A2 , \field Direction of Relative North
+\type real
+\default 0.0
+A3 , \field X-Coordinate of Origin
+\type real
+A4 , \field Part of Total Floor Area
+\type alpha
+\key Yes
+\key No
+\default Yes
+\end-object
+
+\begin-object BUILDINGSURFACE:DETAILED
+A1 , \field Name
+\required-field
+A2 , \field Construction Name
+\type alpha
+A3 , \field Zone Name
+\type alpha
+\end-object
