@@ -165,7 +165,7 @@ jobs:
       - run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]" build jq twine
-      - name: Derive versions from tag
+            - name: Derive versions from tag
         id: ver
         run: |
           TAG="${GITHUB_REF##*/}"
@@ -173,6 +173,12 @@ jobs:
           MINOR="${VER%.*}.${VER#*.}"
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
           echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+      - name: Set dashed version
+        id: dasher
+        run: |
+          dashed="${{ steps.ver.outputs.ver }}"
+          dashed="${dashed//./-}"
+          echo "dashed=$dashed" >> $GITHUB_OUTPUT
       - name: Find installer for release
         id: asset
         run: |
@@ -188,14 +194,13 @@ jobs:
           sudo apt-get update && sudo apt-get install -y curl ca-certificates libx11-6 libgomp1
           curl -fsSL "${{ steps.asset.outputs.url }}" -o eplus.sh
           chmod +x eplus.sh
-          install="${{ steps.ver.outputs.ver//./- }}"
           sudo ./eplus.sh --mode unattended --unattendedmodeui none \
-            --prefix "/usr/local/EnergyPlus-$install" --debuglevel 2
-          ls -l "/usr/local/EnergyPlus-$install/Energy+.idd"
+            --prefix "/usr/local/EnergyPlus-${{ steps.dasher.outputs.dashed }}" --debuglevel 2
+          ls -l "/usr/local/EnergyPlus-${{ steps.dasher.outputs.dashed }}/Energy+.idd"
       - name: Generate stubs for release
         run: |
           python -m mypy_eppy_builder.build_cli \
-            --idd "/usr/local/EnergyPlus-${{ steps.ver.outputs.ver//./- }}/Energy+.idd" \
+            --idd "/usr/local/EnergyPlus-${{ steps.dasher.outputs.dashed }}/Energy+.idd" \
             --eplus "${{ steps.ver.outputs.minor }}" \
             --patch "$(echo "${{ steps.ver.outputs.ver }}" | cut -d. -f3)" \
             --out generated_package
