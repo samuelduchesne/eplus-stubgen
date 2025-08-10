@@ -103,15 +103,18 @@ jobs:
             sha=$(jq -r '.object.sha' <<<"$tag_obj")
           fi
 
+          short=$(printf '%s' "$sha" | cut -c1-10)
+
           echo "version=$ver"   >> "$GITHUB_OUTPUT"
           echo "install=$install" >> "$GITHUB_OUTPUT"
           echo "sha=$sha"       >> "$GITHUB_OUTPUT"
+          echo "short=$short"   >> "$GITHUB_OUTPUT"
 
       - name: Install EnergyPlus ${{ steps.discover.outputs.version }}
         uses: Elementa-Engineering/install-energyplus@main
         with:
           energyplus-version: ${{ steps.discover.outputs.version }}
-          energyplus-sha: ${{ steps.discover.outputs.sha }}
+          energyplus-sha: ${{ steps.discover.outputs.short }}
           energyplus-install: ${{ steps.discover.outputs.install }}
 
       - name: Locate Energy+.idd
@@ -240,12 +243,14 @@ jobs:
               "https://api.github.com/repos/NREL/EnergyPlus/git/tags/${sha}")
             sha=$(jq -r '.object.sha' <<<"$tag_obj")
           fi
+          short=$(printf '%s' "$sha" | cut -c1-10)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=$short" >> "$GITHUB_OUTPUT"
       - name: Install EnergyPlus ${{ steps.ver.outputs.ver }}
         uses: Elementa-Engineering/install-energyplus@main
         with:
           energyplus-version: ${{ steps.ver.outputs.ver }}
-          energyplus-sha: ${{ steps.tsha.outputs.sha }}
+          energyplus-sha: ${{ steps.tsha.outputs.short }}
           energyplus-install: ${{ steps.ver.outputs.ver && steps.ver.outputs.ver != '' && steps.ver.outputs.ver || '0.0.0' }}
       - name: Locate Energy+.idd
         id: idd
