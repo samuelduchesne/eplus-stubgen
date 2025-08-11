@@ -99,7 +99,7 @@ jobs:
           echo -e "y\n\n" | sudo ./eplus.sh
       - name: Generate stubs
         run: |
-          python -m mypy_eppy_builder.build_cli \
+          uv run python -m mypy_eppy_builder.build_cli \
             --idd "/usr/local/EnergyPlus-${{ env.install }}/Energy+.idd" \
             --eplus "${{ matrix.eplus }}" \
             --patch 0 \
@@ -204,7 +204,7 @@ jobs:
           ls -l "/usr/local/EnergyPlus-${{ steps.dasher.outputs.dashed }}/Energy+.idd"
       - name: Generate stubs for release
         run: |
-          python -m mypy_eppy_builder.build_cli \
+          uv run python -m mypy_eppy_builder.build_cli \
             --idd "/usr/local/EnergyPlus-${{ steps.dasher.outputs.dashed }}/Energy+.idd" \
             --eplus "${{ steps.ver.outputs.minor }}" \
             --patch "$(echo "${{ steps.ver.outputs.ver }}" | cut -d. -f3)" \
