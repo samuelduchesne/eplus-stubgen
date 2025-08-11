@@ -57,10 +57,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.8"  # Install a specific version of uv.
+      - name: Install dependencies with uv
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]" jq mypy build
+          uv pip install -e ".[dev]" jq mypy
       - name: Resolve EnergyPlus release information
         id: resolve
         run: |
@@ -112,9 +115,9 @@ jobs:
           if find "$pkg" -type f -name '*.py' | grep -q .; then exit 1; fi
           if find "$pkg" -type f -name 'py.typed' | grep -q .; then exit 1; fi
           test -f "$pkg/__init__.pyi"
-      - name: Build wheels
+      - name: Build wheels with uv
         working-directory: generated_package/${{ matrix.target }}-${{ matrix.eplus }}.0
-        run: python -m build --wheel
+        run: uv build
       - name: Mypy smoke tests
         run: |
           pip install generated_package/eppy-stubs-${{ matrix.eplus }}.0/dist/*.whl
@@ -154,16 +157,20 @@ jobs:
     permissions:
       contents: read
     env:
-      PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]" build jq twine
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.8"  # Install a specific version of uv.
+      - name: Install dependencies with uv
+        run: |
+          uv pip install -e ".[dev]" jq
       - name: Derive versions from tag
         id: ver
         run: |
@@ -202,10 +209,10 @@ jobs:
             --eplus "${{ steps.ver.outputs.minor }}" \
             --patch "$(echo "${{ steps.ver.outputs.ver }}" | cut -d. -f3)" \
             --out generated_package
-      - name: Build release wheels
+      - name: Build release wheels with uv
         run: |
-          python -m build --wheel --outdir dist generated_package/eppy-stubs-${{ steps.ver.outputs.ver }}
-          python -m build --wheel --outdir dist generated_package/archetypal-stubs-${{ steps.ver.outputs.ver }}
-      - name: Publish to PyPI
+          uv build --wheel --out-dir dist generated_package/eppy-stubs-${{ steps.ver.outputs.ver }}
+          uv build --wheel --out-dir dist generated_package/archetypal-stubs-${{ steps.ver.outputs.ver }}
+      - name: Publish to PyPI with uv publish
         run: |
-          twine upload --non-interactive -u __token__ -p "$PYPI_TOKEN" dist/*.whl
+          uv publish dist/*.whl
